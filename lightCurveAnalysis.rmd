@@ -1,0 +1,236 @@
+---
+title: "LightCurveAnalysis"
+author: "Doug Ratay"
+date: "August 13, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("imageFunctions.R")
+```
+
+# Thinking about Light Curves
+
+We're going to generate some light curves with a Gaussian Process, create some DMDT images, and then do some classification.  This is an intellectual excersize to see where it goes.
+
+## Generate Truth Signals
+
+We're going to pick some basic functions to serve as our "truth" data.  There's no reason behind the selection of these functions other than that they're sort of similarly shaped and scaled and with enough noise there might be some overlap.
+
+```{r}
+require(tibble)
+require(dplyr)
+require(magrittr)
+require(ggplot2)
+require(tidyr)
+require(purrr)
+
+typeNames = c('truth1','truth2','truth3','truth4')
+timeVals = 0:100
+numTimes = dim(timeVals)
+functionList = list(function(x){sin(x/35)},
+                    function(x){1.5*sin(x/35)},
+                    function(x){sin(x/35)+0.01*x},
+                    function(x){sqrt(x)/10 + 0.01*x})
+
+truthTable <- map2(.x=typeNames,.y=functionList,.f=function(name,func) {
+  
+  initTable <- tibble(time=timeVals)
+  initTable %>% mutate(!!name := func(time)) %>% gather(key='func',value='value',-time)
+}) %>% bind_rows()
+
+truthTable %>% ggplot(aes(x=time,y=value,color=func)) + geom_point() + geom_line()
+```
+
+To make things a bit more intersting with noise and overlap, we purposesly lose track of the original functions, subsample the points a bit, and fit Gaussian Processes.  This will yield different noise values at different times and make things a bit more difficult.
+
+```{r}
+
+numToKeep = 50
+keptPoints <- map(.x=typeNames,.f=function(name) {
+  tibble(func = rep(name,numToKeep),point = sort(sample(timeVals,numToKeep)))
+}) %>% bind_rows()
+
+
+sampledTable <- map(.x=typeNames,.f=function(name) {
+  
+  indices = keptPoints %>% filter(func==name) %>% select(point)
+  originalSamples = truthTable %>% filter(func==name)
+  originalSamples %>% filter(time %in% as.array(indices$point))
+}) %>% bind_rows()
+
+sampledTable %>% ggplot(aes(x=time,y=value,color=func)) + geom_point() + geom_line()
+
+#Add some noice to make things interesting
+
+sampledTable %<>% mutate(noiseValue = value + rnorm(n(),mean=0,sd=0.01))
+
+sampledTable %>% ggplot(aes(x=time,y=noiseValue,color=func)) + geom_point()
+
+```
+
+Now we fit with a Process
+
+```{r}
+
+listOfGPs <- typeNames %>% map(.f=function(name) {
+  
+  sampledTable %>% filter(func==name) %>% transmute(time=time,value=noiseValue) %>% learnGP()
+})
+```
+
+```{r}
+#make some plots of the structure of the GP
+
+predictions <- map2(.x=listOfGPs,.y=typeNames,.f=function(gp,name) {
+  
+  prediction <- gp$predict(timeVals,se=TRUE)
+  prediction %<>% mutate(time=timeVals,upper=mean+2*se,lower=mean-2*se,type=rep(name,numTimes))
+}) %>% bind_rows()
+
+predictions %>% ggplot(aes(x=time,y=mean,color=type)) + geom_line() + geom_linerange(aes(ymin=lower,ymax=upper)) 
+
+```
+
+## Generate Samples for Learning
+
+With the GPs, we can create sample curves.  We'll start with the easiest case where we have observations over the full time range.  We'll have a range in the number of observations, that will be randomized, with a minimum of 10 observations and a maximum of 30.
+
+```{r}
+
+numTruthProfilesPerType = 30
+numPointsPerProfileRange = 10:30
+numObsPerSample = sample(numPointsPerProfileRange,numTruthProfilesPerType,replace=TRUE)
+
+observationTimeList = 1:numTruthProfilesPerType %>% map(.f=function(index) {
+  sort(sample(timeVals,size = numObsPerSample[index]))
+})
+
+observationTimes <- 
+  tibble(index=1:numTruthProfilesPerType,samplePoints=observationTimeList)
+
+observationList <- map2(.x=listOfGPs,.y=typeNames,.f=function(gp,name) {
+  
+  samples <- generateGPSamples(gp,observationTimes)
+  samples %>% mutate(type=rep(name,n()))
+}) %>% bind_rows()
+
+```
+
+```{r}
+
+#Lets do this with gganimate when connected to the internet again.
+
+1:length(typeNames) %>% walk(.f=function(index) {
+  
+  limitedData <- observationList %>% filter(type==typeNames[index]) %>% mutate(trial=as.factor(trial))
+  p <- limitedData %>% ggplot(aes(x=time,y=value,color=trial)) + geom_point()
+  print(p)
+})
+
+```
+
+Now we convert these samples into our DLDT images.  First we take the differences.
+
+```{r}
+
+#Expect the input table to the function to have columns = time,value
+
+# separate by type
+dldtData <- 1:length(typeNames) %>% map(.f= function(typeIndex) {
+  
+  singleType <- observationList %>% filter(type == typeNames[typeIndex])
+  #and then separate by trial
+  dldts <- 1:numTruthProfilesPerType %>% map(.f=function(trialIndex){
+    
+    inputTable <- singleType %>% filter(trial==trialIndex) %>% select(time,value)
+    calculateDValDTime(inputTable) %>% mutate(trial = rep(trialIndex,n()))    
+  }) %>% bind_rows()
+  
+  dldts %>% mutate(type = rep(typeNames[typeIndex],n()))
+}) %>% bind_rows()
+
+```
+
+```{r}
+
+#look at this later with some annimation or faceting
+
+# dldtData %>% filter(type=='truth1') %>% ggplot(aes(x=time,y=value,color=trial)) + geom_point()
+
+1:length(typeNames) %>% walk(.f=function(typeIndex){
+  
+  reducedData <- dldtData %>% filter(type==typeNames[typeIndex])
+  p <- reducedData %>% ggplot(aes(x=time,y=value,color=trial)) + geom_point() + ylim(c(-2,2))
+  print(p)
+})
+
+```
+
+
+We could have done both the differences and imaging all at once, but we did them separately to visualize and we're not really dealing with that much data here.  Now to the images.
+
+```{r}
+#We have to set up our bin values in the way required by ash::bin2
+#The limts value is a matrix with x on the first row and y on the second
+limits <- matrix(c(0,-2,100,2),2,2)
+#The bins value is a 2 element array with the number of xbins first, ybins second
+#We'll make a 16x16 image just because
+xPixels = 16
+yPixels = 16
+bins <- c(xPixels,yPixels)
+numPixles = xPixels * yPixels
+
+#We do the same loops as above
+imageListOverType <- 1:length(typeNames) %>% map(.f= function(typeIndex) {
+  
+  singleType <- dldtData %>% filter(type == typeNames[typeIndex])
+  #and then separate by trial
+  imageListOverTrial <- 1:numTruthProfilesPerType %>% map(.f=function(trialIndex){
+    
+    inputTable <- singleType %>% filter(trial==trialIndex) %>% select(time,value)
+    imageFrame <- binDValDTime(inputTable,limits,bins) %>% as.data.frame() 
+    imageFrame %>% mutate(trial=rep(trialIndex,n()))     
+  }) %>% bind_rows() 
+  
+  imageListOverTrial %>% mutate(type = rep(typeNames[typeIndex],n()))
+}) %>% bind_rows()
+
+```
+
+```{r}
+
+1:length(typeNames) %>% walk(.f=function(typeIndex) {
+  
+  p <- imageListOverType %>% filter(type==typeNames[typeIndex]) %>%  ggplot(aes(x,y))+geom_raster(aes(fill=value)) + facet_wrap(vars(trial))
+  print(p)
+  
+})
+
+# imageListOverType %>% filter(type=='truth4',trial==1) %>% select(x,y,value) %>% ggplot(aes(x,y))+geom_raster(aes(fill=value))
+
+```
+
+
+
+The nice thing about converting to the images is that we now have a regular size across all samples to either do visualization or comparisons.  Here we'll take a slight detour and put all the points into tsne and see what happens.
+
+```{r}
+#most of what we have to do here is organize the input data.  Although that will happen in the function.
+
+allImagesInRows <- widenImageDataFrame(imageListOverType,numPixels)
+tsneOutput <- getTSNEEmbedding(allImagesInRows,numPixels)
+
+tsneOutput %>% ggplot(aes(x=V1,y=V2,color=type)) + geom_point()
+
+```
+
+
+
+
+
+
+
+
+
