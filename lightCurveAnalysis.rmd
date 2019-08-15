@@ -28,7 +28,7 @@ require(purrr)
 
 typeNames = c('truth1','truth2','truth3','truth4')
 timeVals = 0:100
-numTimes = dim(timeVals)
+numTimes = length(timeVals)
 functionList = list(function(x){sin(x/35)},
                     function(x){1.5*sin(x/35)},
                     function(x){sin(x/35)+0.01*x},
@@ -88,7 +88,9 @@ predictions <- map2(.x=listOfGPs,.y=typeNames,.f=function(gp,name) {
   prediction <- gp$predict(timeVals,se=TRUE)
   prediction %<>% mutate(time=timeVals,upper=mean+2*se,lower=mean-2*se,type=rep(name,numTimes))
 }) %>% bind_rows()
+```
 
+```{r}
 predictions %>% ggplot(aes(x=time,y=mean,color=type)) + geom_line() + geom_linerange(aes(ymin=lower,ymax=upper)) 
 
 ```
@@ -130,6 +132,8 @@ observationList <- map2(.x=listOfGPs,.y=typeNames,.f=function(gp,name) {
 })
 
 ```
+
+## Delvelop DLDT Images
 
 Now we convert these samples into our DLDT images.  First we take the differences.
 
@@ -180,7 +184,7 @@ limits <- matrix(c(0,-2,100,2),2,2)
 xPixels = 16
 yPixels = 16
 bins <- c(xPixels,yPixels)
-numPixles = xPixels * yPixels
+numPixels = xPixels * yPixels
 
 #We do the same loops as above
 imageListOverType <- 1:length(typeNames) %>% map(.f= function(typeIndex) {
@@ -212,24 +216,59 @@ imageListOverType <- 1:length(typeNames) %>% map(.f= function(typeIndex) {
 
 ```
 
-
+## Analyze Images
 
 The nice thing about converting to the images is that we now have a regular size across all samples to either do visualization or comparisons.  Here we'll take a slight detour and put all the points into tsne and see what happens.
 
 ```{r}
+require(ggforce)
+
 #most of what we have to do here is organize the input data.  Although that will happen in the function.
 
 allImagesInRows <- widenImageDataFrame(imageListOverType,numPixels)
 tsneOutput <- getTSNEEmbedding(allImagesInRows,numPixels)
+```
 
+```{r}
 tsneOutput %>% ggplot(aes(x=V1,y=V2,color=type)) + geom_point()
+
+#try a second one with some ellipses
+tsneOutput %>% ggplot(aes(x=V1,y=V2,color=type)) + geom_mark_ellipse(aes(fill=type)) + geom_point()
+
+ggplot(tsneOutput, aes(x=V1,y=V2)) +
+  geom_delaunay_tile(alpha = 0.3) + 
+  geom_delaunay_segment2(aes(colour = type, group = -1), size = 1,
+                         lineend = 'round')
+
+
 
 ```
 
+## Learn Classifier
 
+Having made some pictures, we begin to learn a model.  We've already widened the data into a matrix that is appropriate for using in an NN.  We attempt that here.
 
+```{r}
 
+#A function accomplishes all of the work of training the model, and knows something about the structure we want to use, so we send in our data
+require(keras)
+require(tensorflow)
+#install_keras()
 
+kerasModel <- trainKerasModel(allImagesInRows)
+
+```
+
+```{r}
+#We'll test our training data here.
+predictionTable <- testKerasModel(allImagesInRows,kerasModel)
+
+```
+
+```{r}
+predictionTable %>% ggplot(aes(correct)) + geom_bar()
+
+```
 
 
 

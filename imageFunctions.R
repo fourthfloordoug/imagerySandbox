@@ -98,3 +98,75 @@ getTSNEEmbedding <- function(wideImageFrame,numPixels) {
   as.tibble(tsneOutput$Y) %>% mutate(type=wideImageFrame$type,trial=wideImageFrame$trial)
 }
 
+
+trainKerasModel <- function(wideImageFrame) {
+  
+  require(keras)
+  require(tensorflow)
+  
+  numPixels = ncol(wideImageFrame) - 2
+  maxPixelValue = 256
+  numTypes = length(unique(wideImageFrame$type))
+  
+  #Do some manipulations with the labels to get in the right format for keras.
+  inputDataMatrix <- as.matrix(wideImageFrame[,3:(2+numPixels)])
+  #scale everything from 0 to 1.  We'll pretend it is an 16 bit image
+  inputDataMatrix <- inputDataMatrix / (maxPixelValue -1)
+  
+  categoryTable <- wideImageFrame %>% select(type)
+  #We need to convert the types to integer values for use in keras
+  categoryTable %<>% transmute(type = as.integer(substr(type,6,6)))
+  
+  typeValues <- to_categorical(as.vector(categoryTable$type))
+  
+  #define the model
+  model <- keras_model_sequential() 
+  model %>% 
+    layer_dense(units = maxPixelValue, activation = 'relu', input_shape = c(numPixels)) %>% 
+    layer_dropout(rate = 0.4) %>% 
+    layer_dense(units = (maxPixelValue/2), activation = 'relu') %>%
+    layer_dropout(rate = 0.3) %>%
+    layer_dense(units = numTypes, activation = 'softmax')
+  
+  model %>% compile(
+    loss = 'categorical_crossentropy',
+    optimizer = optimizer_rmsprop(),
+    metrics = c('accuracy')
+  )
+  
+  #The history object here has fit parameters, but we will only use them for diagnostics.
+  #We'll want to return the model object which apparently is stateful.
+  history <- model %>% fit(
+    inputDataMatrix, typeValues, 
+    epochs = 30, batch_size = 128, 
+    validation_split = 0.2
+  )
+  
+  model
+}
+
+
+testKerasModel <- function(wideImageFrame,kerasModel) {
+  
+  require(keras)
+  require(tensorflow)
+  
+  numPixels = ncol(wideImageFrame) - 2
+  maxPixelValue = 256
+  numTypes = length(unique(wideImageFrame$type))
+  
+  #Separate the categories from the data as with the training set.
+  
+  inputDataMatrix <- as.matrix(wideImageFrame[,3:(2+numPixels)])
+  inputDataMatrix <- inputDataMatrix / (maxPixelValue -1)
+  
+  categoryTable <- wideImageFrame %>% select(type) %>% 
+    transmute(type = as.integer(substr(type,6,6)))
+  typeValues <- as.vector(categoryTable$type)
+  
+  #This returns a vector of classes
+  predictions <- kerasModel %>% predict_classes(x_test)
+  
+  #Work everything together in a tibble
+  tibble(truth=typeValues,predict=predictions) %>% mutate(correct=ifelse(truth==predict,TRUE,FALSE))
+}
