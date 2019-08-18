@@ -116,6 +116,8 @@ trainKerasModel <- function(wideImageFrame) {
   categoryTable <- wideImageFrame %>% select(type)
   #We need to convert the types to integer values for use in keras
   categoryTable %<>% transmute(type = as.integer(substr(type,6,6)))
+  #unfortunately, the class names have to be 0 indexed, so we subtract
+  categoryTable %<>% transmute(type = type-1)
   
   typeValues <- to_categorical(as.vector(categoryTable$type))
   
@@ -165,7 +167,10 @@ testKerasModel <- function(wideImageFrame,kerasModel) {
   typeValues <- as.vector(categoryTable$type)
   
   #This returns a vector of classes
-  predictions <- kerasModel %>% predict_classes(x_test)
+  predictions <- kerasModel %>% predict_classes(inputDataMatrix)
+  
+  #because keras is zero indexed on type, we have to add 1 to all of the predictions
+  predictions = predictions + 1
   
   #Work everything together in a tibble
   tibble(truth=typeValues,predict=predictions) %>% mutate(correct=ifelse(truth==predict,TRUE,FALSE))

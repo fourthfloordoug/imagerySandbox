@@ -43,7 +43,7 @@ truthTable <- map2(.x=typeNames,.y=functionList,.f=function(name,func) {
 truthTable %>% ggplot(aes(x=time,y=value,color=func)) + geom_point() + geom_line()
 ```
 
-To make things a bit more intersting with noise and overlap, we purposesly lose track of the original functions, subsample the points a bit, and fit Gaussian Processes.  This will yield different noise values at different times and make things a bit more difficult.
+To make things a bit more intersting with noise and overlap, we purposesly lose track of the original functions, subsample the points a bit, and fit Gaussian Processes.  This will yield different noise values at different times and allow us to sample at fractional time points, although we probably won't do this.
 
 ```{r}
 
@@ -266,7 +266,7 @@ predictionTable <- testKerasModel(allImagesInRows,kerasModel)
 ```
 
 ```{r}
-predictionTable %>% ggplot(aes(correct)) + geom_bar()
+predictionTable %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct))
 
 ```
 

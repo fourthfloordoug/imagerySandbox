@@ -1,0 +1,94 @@
+---
+title: "lightCurveAnalysis_2"
+author: "Doug Ratay"
+date: "August 16, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Thinking about Light Curves
+
+This is an update to the first version of lightCurveAnalysis.  In this one, we do more time ranges and explicitly hold off some test points from the training.  The same procedure applies here, though.  We'll make some truth functions, sample the functions, and represent truth with Gaussian Processes.  Then we'll draw samples from those GPs as the input to DLDT images.  Those will get fed into a DNN to do classification on some test points.  Fun.
+
+## Generate Truth Signals
+
+We're going to pick some basic functions to serve as our "truth" data.  There's no reason behind the selection of these functions other than that they're sort of similarly shaped and scaled and with enough noise there might be some overlap.  Look in "helperFunctions.R" to see the definitions of the functions.  The truth data for the functions is plotted below.
+
+```{r}
+require(tibble)
+require(dplyr)
+require(magrittr)
+require(ggplot2)
+require(tidyr)
+require(purrr)
+
+typeNames = c('truth1','truth2','truth3','truth4')
+numTypes = length(typeNames)
+timeVals = 0:100
+numTimes = length(timeVals)
+                  
+truthTable <- createTruthData(timeVals,typeNames,createListOfFunctions(numTypes))
+```
+
+```{r}
+truthTable %>% ggplot(aes(x=time,y=value,color=func)) + geom_point() + geom_line()
+```
+
+As before, we add complexity to the problem by purposefully losing track of the functions and working purely with sampled data.  To do that, we randomly sample the functions, add Gaussian noise, and learn a Gaussian Process over the noisy samples.  The Gaussian Process allows for variable uncertainty depending on how close a requested sample is to a training point and the ability to freely sample at non-prespecified times.  
+
+We plot the sampled points with and without noise below.
+
+```{r}
+
+numToKeep = 50
+sampleNoise = 0.01
+sampledTable <- downSampleTruthPoints(truthTable,numToKeep,typeNames,timeVals)
+sampledTable %<>% mutate(noiseValue = value + rnorm(n(),0,sampleNoise))
+
+
+sampledTable %>% ggplot(aes(x=time,y=value,color=func)) + geom_point() + geom_line()
+sampledTable %>% ggplot(aes(x=time,y=noiseValue,color=func)) + geom_point()
+```
+
+
+Fit a Gaussian process to the sampled data.  Create maximum likelihood predictions at all of the original time points to show that the GPs are doing what they're supposed to.  The prediction points also includes error bars.  Depending on the points used and the noise added to the samples difference across the range may be visible.
+
+```{r}
+
+listOfGPs <- fitGaussianProcesses(typeNames,sampledTable)
+gpPredictions <- createGaussianProcessPredictions(listOfGPs,typeNames,timeVals)
+```
+
+```{r}
+predictions %>% ggplot(aes(x=time,y=mean,color=type)) + geom_line() + geom_linerange(aes(ymin=lower,ymax=upper)) 
+
+```
+
+
+Now we generate samples from the GPs to serve as our training data.  We randomize the times that are used in each sample through use of a set of bins.  These bins represent different windows of the process, allowing different amounts of information into the final sample set. From these random time profiles we generate the observed profiles. Through the way we sample from the GP, noise is already baked in.  We'll use the same set of random time points for all of our types.  In a perfect world, we would randomize across this, but for the purposes of this experiment, it shouldn't matter too much.
+
+In the final output table, data is organized by trial and truth type.
+
+```{r}
+
+maxTimesForBins = c(20,40,60,80,100)
+numProfilesPerTimeBin = c(30,30,30,30,30)
+numPointsPerProfileRanges = list(4:10,8:20,12:30,16:40,20:50)
+
+trainingDataTable <- generateSamples(listOfGPs,typeNames,maxTimesForBins,numProfilesPerTimeBin,numPointsPerFrofileRanges)
+```
+
+```{r}
+require(gganimate)
+require(gifski)
+
+trainingDataPlot <- trainingDataTable %>% mutate(trial=as.factor(trial))  %>% ggplot(aes(x=time,y=value,color=type)) + geom_point() + transition_states(trial,transition_length=1,state_length=2) + labs(title='Trial: {closest_state}')
+animate(trainingDataPlot,nframes=3*sum(numProfilesPerTimeBin))
+
+```
+
+
+
