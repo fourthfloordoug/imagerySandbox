@@ -58,6 +58,7 @@ fitGaussianProcesses <- function(typeNames,sampledTable) {
   })
 }
 
+
 createGaussianProcessPredictions <- function(listOfGPs,typeNames,timeVals) {
   
   require(purrr)
@@ -73,6 +74,7 @@ createGaussianProcessPredictions <- function(listOfGPs,typeNames,timeVals) {
   
   predictions
 }
+
 
 generateSamples <- function(gpList,
                             typeNames,
@@ -113,4 +115,42 @@ generateSamples <- function(gpList,
 
 
 
+convertSamplesToDValDt <- function(sampleTable,typeNames,numProfilesPerType) {
+  
+  dldtData <- 1:length(typeNames) %>% map(.f= function(typeIndex) {
+    
+    singleType <- sampleTable %>% filter(type == typeNames[typeIndex])
+    #and then separate by trial
+    dldts <- 1:numProfilesPerType %>% map(.f=function(trialIndex){
+      
+      inputTable <- singleType %>% filter(trial==trialIndex) %>% select(time,value)
+      calculateDValDTime(inputTable) %>% mutate(trial = rep(trialIndex,n()))    
+    }) %>% bind_rows()
+    
+    dldts %>% mutate(type = rep(typeNames[typeIndex],n()))
+  }) %>% bind_rows()
+  
+  dldtData
+}
+
+
+createImages <- function(dldtData,typeNames,numProfilesPerType,limits,bins) {
+  
+  #We do the same loops as above
+  imageListOverType <- 1:length(typeNames) %>% map(.f= function(typeIndex) {
+    
+    singleType <- dldtData %>% filter(type == typeNames[typeIndex])
+    #and then separate by trial
+    imageListOverTrial <- 1:numProfilesPerType %>% map(.f=function(trialIndex){
+      
+      inputTable <- singleType %>% filter(trial==trialIndex) %>% select(time,value)
+      imageFrame <- binDValDTime(inputTable,limits,bins) %>% as.data.frame() 
+      imageFrame %>% mutate(trial=rep(trialIndex,n()))     
+    }) %>% bind_rows() 
+    
+    imageListOverTrial %>% mutate(type = rep(typeNames[typeIndex],n()))
+  }) %>% bind_rows()
+  
+  imageListOverType
+}
 

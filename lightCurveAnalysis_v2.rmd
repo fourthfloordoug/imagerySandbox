@@ -7,6 +7,9 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
+source('imageFunctions.R')
+source('helperFunctions.R')
 ```
 
 # Thinking about Light Curves
@@ -63,7 +66,7 @@ gpPredictions <- createGaussianProcessPredictions(listOfGPs,typeNames,timeVals)
 ```
 
 ```{r}
-predictions %>% ggplot(aes(x=time,y=mean,color=type)) + geom_line() + geom_linerange(aes(ymin=lower,ymax=upper)) 
+gpPredictions %>% ggplot(aes(x=time,y=mean,color=type)) + geom_line() + geom_linerange(aes(ymin=lower,ymax=upper)) 
 
 ```
 
@@ -78,6 +81,7 @@ maxTimesForBins = c(20,40,60,80,100)
 numProfilesPerTimeBin = c(30,30,30,30,30)
 numPointsPerProfileRanges = list(4:10,8:20,12:30,16:40,20:50)
 
+
 trainingDataTable <- generateSamples(listOfGPs,typeNames,maxTimesForBins,numProfilesPerTimeBin,numPointsPerFrofileRanges)
 ```
 
@@ -91,4 +95,185 @@ animate(trainingDataPlot,nframes=3*sum(numProfilesPerTimeBin))
 ```
 
 
+Now convert all of the samples into DValDt data.  We'll create these graphs and then the images in two steps to show the process.
+
+```{r}
+
+totalProfilesPerType = sum(numProfilesPerTimeBin)
+dldtData <- convertSamplesToDValDt(trainingDataTable,typeNames,totalProfilesPerType)
+
+```
+
+```{r}
+
+displayTrials = seq(from=5,to=totalProfilesPerType,by=5)
+trainingDlDtPlot <- dldtData %>% filter(trial %in% displayTrials) %>% ggplot(aes(x=time,y=value,color=type)) + geom_point() + ylim(c(-2,2)) + facet_wrap(~type) + transition_states(trial,transition_length=1,state_length=2) + labs(title='Trial: {closest_state}')
+
+animate(trainingDlDtPlot,nframes=3*totalProfilesPerType/5)
+
+```
+
+And now we create images.  There are a couple of parameters that have to get set for the binning process that are defined by the algorithm.  First is "limits"", a 2x2 matrix that has the x-range in teh first row and the y-range in the second.  Then "bins", a 2 element array that contains the number of x-bins and the number of y-bins.  We use a 16x16 image since this seems to fit the shape of the data well and is reasonably small for later processing by our DBN.
+
+```{r}
+require(ash)
+require(imager)
+
+limits <- matrix(c(0,-2,100,2),2,2)
+xPixels = 16
+yPixels = 16
+bins <- c(xPixels,yPixels)
+numPixels = xPixels * yPixels
+
+dldtTrainingImages <- createImages(dldtData,typeNames,totalProfilesPerType,limits,bins)
+
+```
+
+```{r}
+
+dldtTrainingImagesPlot <- dldtTrainingImages %>% filter(trial %in% displayTrials) %>% ggplot(aes(x,y)) + geom_raster(aes(fill=value)) + facet_wrap(~type) + transition_states(trial,transition_length=1,state_length=2) + labs(title='Trial: {closest_state}')
+  
+animate(dldtTrainingImagesPlot,nframes=3*totalProfilesPerType/5)  
+  
+```
+
+## Analyze Images
+
+The nice thing about converting to the images is that we now have a regular size across all samples to either do visualization or comparisons.  Here we'll take a slight detour and put all the points into tsne and see what happens.
+
+Note that tsne requires all the points to be unique, so we have to test for and remove duplicates.  We'll tolerate this since this is just for display, although it tells us that maybe we should sample across different times in the future.
+
+```{r}
+
+require(Rtsne)
+
+allTrainingImagesInRows <- widenImageDataFrame(dldtTrainingImages,numPixels)
+tsneTrainingImagesOutput <- getTSNEEmbedding(allTrainingImagesInRows,numPixels)
+```
+
+```{r}
+require(ggforce)
+
+tsneTrainingImagesOutput %>% ggplot(aes(x=V1,y=V2,color=type)) + geom_point()
+
+#try a second one with some ellipses
+tsneTrainingImagesOutput %>% ggplot(aes(x=V1,y=V2,color=type)) + geom_mark_ellipse(aes(fill=type)) + geom_point()
+
+#this makes an acyclical graph plot of the points.
+ggplot(tsneTrainingImagesOutput, aes(x=V1,y=V2)) +
+  geom_delaunay_tile(alpha = 0.3) + 
+  geom_delaunay_segment2(aes(colour = type, group = -1), size = 1,
+                         lineend = 'round')
+```
+
+## Learn Classifier
+
+Having made some pictures, we begin to learn a model.  We've already widened the data into a matrix that is appropriate for using in an NN.  We attempt that here.  The charts below show how we self-test on the training data.  Charts 1 and 3 are based on truth data.  There are 150 trials for each type, how many of those did we get right.  Chart 1 is overall and Chart 3 is based on time.  Charts 2 and 4 are based on predictions.  How many predictions of a given type were correct.  By combining the two, we can see how we misclassified things.  I will look into making an alluvial plot for this as well.
+
+```{r}
+
+#A function accomplishes all of the work of training the model, and knows something about the structure we want to use, so we send in our data
+require(keras)
+require(tensorflow)
+#install_keras()
+
+kerasModel <- trainKerasModel(allTrainingImagesInRows)
+
+```
+
+```{r}
+#We'll test our training data here.
+selfTestPredictionTable <- testKerasModel(allTrainingImagesInRows,kerasModel)
+
+```
+
+```{r}
+selfTestPredictionTable %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct))
+
+selfTestPredictionTable %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct))
+
+trialBins <- c(31,61,91,121,151)
+selfTestPredictionTable %<>% mutate(trialBin = case_when(trial<trialBins[1] ~ 1,
+                                                         trial<trialBins[2] ~ 2,
+                                                         trial<trialBins[3] ~ 3,
+                                                         trial<trialBins[4] ~ 4,
+                                                         trial<trialBins[5] ~ 5))
+
+selfTestPredictionTable %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct)) + facet_wrap(~trialBin) 
+
+selfTestPredictionTable %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct)) + facet_wrap(~trialBin)
+
+```
+
+
+
+To test our model, we create new samples that weren't in the original set.  We will make a fair amount less points than the original, since we don't need to train a model.
+
+
+```{r}
+
+numProfilesPerTimeBin_test = c(5,5,5,5,5)
+
+
+testDataTable <- generateSamples(listOfGPs,typeNames,maxTimesForBins,numProfilesPerTimeBin_test,numPointsPerFrofileRanges)
+```
+
+```{r}
+
+testDataPlot <- testDataTable %>% mutate(trial=as.factor(trial))  %>% ggplot(aes(x=time,y=value,color=type)) + geom_point() + transition_states(trial,transition_length=1,state_length=2) + labs(title='Trial: {closest_state}')
+animate(testDataPlot,nframes=3*sum(numProfilesPerTimeBin_test))
+
+```
+
+Create DLDT's.  We won't show this data, since it's similar to above.  Only the Images.
+
+```{r}
+
+totalProfilesPerType_test = sum(numProfilesPerTimeBin_test)
+testdldtData <- convertSamplesToDValDt(testDataTable,typeNames,totalProfilesPerType_test)
+
+```
+
+Here we create the test images, and show them.
+
+```{r}
+
+dldtTestImages <- 
+  createImages(testdldtData,typeNames,totalProfilesPerType_test,limits,bins)
+
+```
+
+```{r}
+
+dldtTestImages %>% ggplot(aes(x,y)) + geom_raster(aes(fill=value)) + facet_wrap(~type) + transition_states(trial,transition_length=1,state_length=2) + labs(title='Trial: {closest_state}')
+  
+```
+
+Organize the test data into Row vectors for application to the DBN.
+
+```{r}
+
+allTestImagesInRows <- widenImageDataFrame(dldtTestImages,numPixels)
+outOfSampleTestPredictionTable <- testKerasModel(allTestImagesInRows,kerasModel)
+
+```
+
+
+```{r}
+outOfSampleTestPredictionTable %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct))
+
+outOfSampleTestPredictionTable %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct))
+
+trialBins <- c(6,11,16,21,26)
+outOfSampleTestPredictionTable %<>% mutate(trialBin = case_when(trial<trialBins[1] ~ 1,
+                                                         trial<trialBins[2] ~ 2,
+                                                         trial<trialBins[3] ~ 3,
+                                                         trial<trialBins[4] ~ 4,
+                                                         trial<trialBins[5] ~ 5))
+
+outOfSampleTestPredictionTable %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct)) + facet_wrap(~trialBin) 
+
+outOfSampleTestPredictionTable %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct)) + facet_wrap(~trialBin)
+
+```
 

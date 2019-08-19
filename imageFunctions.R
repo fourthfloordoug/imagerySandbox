@@ -90,12 +90,20 @@ getTSNEEmbedding <- function(wideImageFrame,numPixels) {
   #We're expecting a wide dataframe here where the first two columns include information
   #on the type and trial#.  
   
-  inputDataMatrix <- as.matrix(wideImageFrame[,3:(2+numPixels)])
+  #We have to eliminate any duplicate points
+  duplicatedRows <- duplicated(wideImageFrame[,3:(2+numPixels)])
+  filteredData <- wideImageFrame %>% mutate(duplicated=duplicatedRows) %>% filter(duplicated==FALSE)
+  
+  distinctInputData <- filteredData %>% select(-c(type,trial,duplicated))
+  
+  #distinctInputData <- wideImageFrame[,3:(2+numPixels)] %>% distinct()
+  
+  inputDataMatrix <- as.matrix(distinctInputData)
   # Set a seed if you want reproducible results
   set.seed(42)
   tsneOutput <- Rtsne(inputDataMatrix,pca=FALSE,perplexity=30,theta=0.0)
   
-  as.tibble(tsneOutput$Y) %>% mutate(type=wideImageFrame$type,trial=wideImageFrame$trial)
+  as.tibble(tsneOutput$Y) %>% mutate(type=filteredData$type,trial=filteredData$trial)
 }
 
 
@@ -166,6 +174,7 @@ testKerasModel <- function(wideImageFrame,kerasModel) {
     transmute(type = as.integer(substr(type,6,6)))
   typeValues <- as.vector(categoryTable$type)
   
+  
   #This returns a vector of classes
   predictions <- kerasModel %>% predict_classes(inputDataMatrix)
   
@@ -173,5 +182,6 @@ testKerasModel <- function(wideImageFrame,kerasModel) {
   predictions = predictions + 1
   
   #Work everything together in a tibble
-  tibble(truth=typeValues,predict=predictions) %>% mutate(correct=ifelse(truth==predict,TRUE,FALSE))
+  tibble(truth=typeValues,trial=wideImageFrame$trial,predict=predictions) %>% 
+    mutate(correct=ifelse(truth==predict,TRUE,FALSE))
 }
