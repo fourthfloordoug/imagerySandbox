@@ -185,3 +185,39 @@ testKerasModel <- function(wideImageFrame,kerasModel) {
   tibble(truth=typeValues,trial=wideImageFrame$trial,predict=predictions) %>% 
     mutate(correct=ifelse(truth==predict,TRUE,FALSE))
 }
+
+
+testKerasModelForProbType <- function(wideImageFrame,kerasModel) {
+  
+  require(keras)
+  require(tensorflow)
+  
+  numPixels = ncol(wideImageFrame) - 2
+  maxPixelValue = 256
+  types = unique(wideImageFrame$type)
+  numTypes = length(types)
+  
+  #Separate the categories from the data as with the training set.
+  
+  inputDataMatrix <- as.matrix(wideImageFrame[,3:(2+numPixels)])
+  inputDataMatrix <- inputDataMatrix / (maxPixelValue -1)
+  
+  categoryTable <- wideImageFrame %>% select(type) %>% 
+    transmute(type = as.integer(substr(type,6,6)))
+  typeValues <- as.vector(categoryTable$type)
+  
+  
+  #This returns a matrix with rows=numpoints and cols=numtypes
+  predictions <- kerasModel %>% predict_proba(inputDataMatrix) %>% as.tibble()
+  
+  colnames(predictions) <- types
+  
+  predictions %>% mutate(truth=typeValues,trial=wideImageFrame$trial) %>% 
+    gather(key,value,types) %>% rename(predictedType=key,probability=value)
+
+  
+  
+  # #Work everything together in a tibble
+  # tibble(truth=typeValues,trial=wideImageFrame$trial,predict=predictions) %>% 
+  #   mutate(correct=ifelse(truth==predict,TRUE,FALSE))
+}

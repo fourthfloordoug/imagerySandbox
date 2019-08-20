@@ -206,6 +206,7 @@ selfTestPredictionTable %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct)) +
 ```
 
 
+## Test Classifier
 
 To test our model, we create new samples that weren't in the original set.  We will make a fair amount less points than the original, since we don't need to train a model.
 
@@ -274,6 +275,371 @@ outOfSampleTestPredictionTable %<>% mutate(trialBin = case_when(trial<trialBins[
 outOfSampleTestPredictionTable %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct)) + facet_wrap(~trialBin) 
 
 outOfSampleTestPredictionTable %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct)) + facet_wrap(~trialBin)
+
+```
+
+
+## Test Time Series Prediction
+
+One thing we're interested in a practical sense is to follow a time series along and see how our estimation of the object changes over time.  To do this, we take the longest test sample for each type, and then divide it up into increasingly long parts. We calculate the type at each time stop to see when/how it gets to the right answer.
+
+
+```{r}
+
+#select test trial 25 from each of our classes.  We have to go back to the original test data and then build up the dldts and images.  
+
+timeSeriesTestInput <- testDataTable %>% filter(trial == 22) %>% select(-trial)
+
+#label the data with a time block index.
+
+timeBlocks <- seq(from=0,to=100,by=10)
+
+timeSeriesTestInput %<>% mutate(timeBlock = cut(time,breaks = timeBlocks,labels=FALSE))
+
+timeSeriesTestInputExpanded <- 1:length(timeBlocks) %>% map(.f=function(blockIndex){
+  
+  timeSeriesTestInput %>% filter(timeBlock <= blockIndex) %>% mutate(trial=blockIndex) %>% bind_rows()
+  
+}) %>% bind_rows() %>% select(-timeBlock)
+
+```
+
+```{r}
+
+numTimeSeriesTrials = 10;
+timeSeriesTestdldtData <-
+  convertSamplesToDValDt(timeSeriesTestInputExpanded,typeNames,numTimeSeriesTrials)
+
+timeSeriesTestdldtImages <- 
+  createImages(timeSeriesTestdldtData,typeNames,numTimeSeriesTrials,limits,bins)
+
+```
+
+```{r}
+
+timeSeriesTestImagesInRows <- widenImageDataFrame(timeSeriesTestdldtImages,numPixels)
+timeSeriesTestPredictionTable <-
+  testKerasModelForProbType(timeSeriesTestImagesInRows,kerasModel)
+
+```
+
+```{r}
+
+timeSeriesTestPredictionTable %>% ggplot(aes(x=trial,y=probability,color=predictedType)) + geom_line() + geom_point() + facet_wrap(~truth)
+
+```
+
+
+## Fusing Multiple Sources
+
+Now we can move to fusing data from different sources.  The DLDT technique is interesting for this, as it allows for a combination of scales in a natural way that concatenating vectors of real functions doesn't exactly lead to.
+
+We generate some new data
+
+```{r}
+
+process2TruthTable <- createTruthData(timeVals,typeNames,createProcess2Funcs(numTypes))
+process3TruthTable <- createTruthData(timeVals,typeNames,createProcess3Funcs(numTypes))
+ 
+```
+
+```{r}
+process2TruthTable %>% ggplot(aes(x=time,y=value,color=func)) + geom_point() + geom_line()
+process3TruthTable %>% ggplot(aes(x=time,y=value,color=func)) + geom_point() + geom_line()
+```
+
+
+We proceed in a similar manner to above by sampling times (we'll use the same as above for ease), computing the Gaussian process, sampling profiles, computing DLDT images.  Afterwhich we will combine data between the processes.
+
+
+```{r}
+
+process2Noise = 3.0
+process3Noise = 5.0
+
+process2SampledTable <-
+  downSampleTruthPoints(process2TruthTable,numToKeep,typeNames,timeVals) %>%
+  mutate(noiseValue = value + rnorm(n(),0,process2Noise))
+
+process2SampledTable <-
+  downSampleTruthPoints(process3TruthTable,numToKeep,typeNames,timeVals) %>%
+  mutate(noiseValue = value + rnorm(n(),0,process3Noise))
+
+```
+
+```{r}
+
+process2GPs <- fitGaussianProcesses(typeNames,process2SampledTable)
+
+process3GPs <- fitGaussianProcesses(typeNames,process3SampledTable)
+
+```
+
+```{r}
+
+process2TrainingDataTable <- generateSamples(process2GPs,typeNames,maxTimesForBins,numProfilesPerTimeBin,numPointsPerFrofileRanges)
+
+process3rainingDataTable <- generateSamples(process3GPs,typeNames,maxTimesForBins,numProfilesPerTimeBin,numPointsPerFrofileRanges)
+
+```
+
+
+```{r}
+
+process2DldtData <- 
+  convertSamplesToDValDt(process2TrainingDataTable,typeNames,totalProfilesPerType)
+
+process3DldtData <- 
+  convertSamplesToDValDt(process3TrainingDataTable,typeNames,totalProfilesPerType)
+
+```
+
+
+```{r}
+process2DldtTrainingImages <- createImages(process2DldtData,typeNames,totalProfilesPerType,limits,bins)
+
+process3DldtTrainingImages <- createImages(process3DldtData,typeNames,totalProfilesPerType,limits,bins)
+
+```
+
+```{r}
+
+process2DldtTrainingImagesPlot <- process2DldtTrainingImages %>% filter(trial %in% displayTrials) %>% ggplot(aes(x,y)) + geom_raster(aes(fill=value)) + facet_wrap(~type) + transition_states(trial,transition_length=1,state_length=2) + labs(title='Trial: {closest_state}')
+  
+animate(process2DldtTrainingImagesPlot,nframes=3*totalProfilesPerType/5)  
+  
+```
+
+```{r}
+
+process3DldtTrainingImagesPlot <- process3DldtTrainingImages %>% filter(trial %in% displayTrials) %>% ggplot(aes(x,y)) + geom_raster(aes(fill=value)) + facet_wrap(~type) + transition_states(trial,transition_length=1,state_length=2) + labs(title='Trial: {closest_state}')
+  
+animate(process3DldtTrainingImagesPlot,nframes=3*totalProfilesPerType/5)  
+  
+```
+
+
+We can combine these images into RGB frames.  We'll just pick a couple to show rather than animating through.
+
+```{r}
+process2Type1Trial31 = process2DldtTrainingImages %>% filter(type=='truth1',trial==31)
+process3Type1Trial31 = process3DldtTrainingImages %>% filter(type=='truth1',trial==31)
+
+type1trial31RGB = dldtTrainingImages %>% filter(type=='truth1',trial==31)  %>%
+  mutate(value2 = process2Type1Trail31$value,value3 = process3Type1Trial31$value) %>%
+  mutate(rgb.val=rgb(value,value2,value3))
+
+
+process2Type3Trial81 = process2DldtTrainingImages %>% filter(type=='truth3',trial==81)
+process3Type3Trial81 = process3DldtTrainingImages %>% filter(type=='truth3',trial==81)
+
+type3trial81RGB = dldtTrainingImages %>% filter(type=='truth3',trial==81)  %>%
+  mutate(value2 = process2Type3Trail81$value,value3 = process3Type3Trial81$value) %>%
+  mutate(rgb.val=rgb(value,value2,value3))
+
+```
+
+
+```{r}
+
+type1trial31RGB %>% ggplot(aes(x,y))+geom_raster(aes(fill=rgb.val))+scale_fill_identity()
+
+type3trial81RGB %>% ggplot(aes(x,y))+geom_raster(aes(fill=rgb.val))+scale_fill_identity()
+
+```
+
+Now we wideng the datatables and send to training.
+
+```{r}
+
+process2TrainingImagesInRows <- 
+  widenImageDataFrame(process2DldtTrainingImages,numPixels) %>% select(-c(trial,type))
+process3TrainingImagesInRows <- 
+  widenImageDataFrame(process3DldtTrainingImages,numPixels) %>% select(-c(trial,type))
+
+rgbTrainingImagesInRows <-
+  bind_cols(allTrainingImagesInRows,
+            process2TrainingImagesInRows,
+            process3TrainingImagesInRows)
+
+```
+
+
+```{r}
+
+rgbKerasModel <- trainKerasModel(rgbTrainingImagesInRows)
+
+```
+
+```{r}
+#We'll test our training data here.
+rgbSelfTestPredictionTable <- testKerasModel(rgbTrainingImagesInRows,rgbKerasModel)
+
+```
+
+```{r}
+rgbSelfTestPredictionTable %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct))
+
+rgbSelfTestPredictionTable %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct))
+
+trialBins <- c(31,61,91,121,151)
+rgbSelfTestPredictionTable %<>% mutate(trialBin = case_when(trial<trialBins[1] ~ 1,
+                                                         trial<trialBins[2] ~ 2,
+                                                         trial<trialBins[3] ~ 3,
+                                                         trial<trialBins[4] ~ 4,
+                                                         trial<trialBins[5] ~ 5))
+
+rgbSelfTestPredictionTable %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct)) + facet_wrap(~trialBin) 
+
+rgbSelfTestPredictionTable %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct)) + facet_wrap(~trialBin)
+
+```
+
+
+Now we do test points for the rgb data.
+
+```{r}
+
+process2TestDataTable <-
+  generateSamples(process2GPs,typeNames,maxTimesForBins,numProfilesPerTimeBin_test,numPointsPerFrofileRanges)
+
+process3TestDataTable <-
+  generateSamples(process3GPs,typeNames,maxTimesForBins,numProfilesPerTimeBin_test,numPointsPerFrofileRanges)
+```
+
+```{r}
+
+process2TestdldtData <-
+  convertSamplesToDValDt(process2TestDataTable,typeNames,totalProfilesPerType_test)
+
+process3TestdldtData <-
+  convertSamplesToDValDt(process3TestDataTable,typeNames,totalProfilesPerType_test)
+
+```
+
+
+```{r}
+
+process2DldtTestImages <- 
+  createImages(process2TestdldtData,typeNames,totalProfilesPerType_test,limits,bins)
+
+process3DldtTestImages <- 
+  createImages(process3TestdldtData,typeNames,totalProfilesPerType_test,limits,bins)
+
+```
+
+
+```{r}
+
+process2TestImagesInRows <- 
+  widenImageDataFrame(process2DldtTestImages,numPixels) %>% select(-c(trial,type))
+process3TestImagesInRows <- 
+  widenImageDataFrame(process3DldtTestImages,numPixels) %>% select(-c(trial,type))
+
+rgbTestImagesInRows <-
+  bind_cols(allTestImagesInRows,
+            process2TestImagesInRows,
+            process3TestImagesInRows)
+
+
+rgbTestPredictionTable <- testKerasModel(rgbTestImagesInRows,rgbKerasModel)
+
+```
+
+
+```{r}
+rgbTestPredictionTable %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct))
+
+rgbTestPredictionTable %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct))
+
+trialBins <- c(6,11,16,21,26)
+rgbTestPredictionTable %<>% mutate(trialBin = case_when(trial<trialBins[1] ~ 1,
+                                                         trial<trialBins[2] ~ 2,
+                                                         trial<trialBins[3] ~ 3,
+                                                         trial<trialBins[4] ~ 4,
+                                                         trial<trialBins[5] ~ 5))
+
+rgbTestPredictionTable %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct)) + facet_wrap(~trialBin) 
+
+rgbTestPredictionTable %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct)) + facet_wrap(~trialBin)
+
+```
+
+
+Now do the RGB time series.
+
+```{r}
+
+#select test trial 25 from each of our classes.  We have to go back to the original test data and then build up the dldts and images.  
+
+process2TimeSeriesTestInput <- process2TestDataTable %>% filter(trial == 22) %>% select(-trial)
+
+process3TimeSeriesTestInput <- process3TestDataTable %>% filter(trial == 22) %>% select(-trial)
+
+
+
+process2TimeSeriesTestInput %<>% 
+  mutate(timeBlock = cut(time,breaks = timeBlocks,labels=FALSE))
+process3TimeSeriesTestInput %<>% 
+  mutate(timeBlock = cut(time,breaks = timeBlocks,labels=FALSE))
+
+process2TimeSeriesTestInputExpanded <- 
+  1:length(timeBlocks) %>% map(.f=function(blockIndex){
+    
+    process2TimeSeriesTestInput %>% filter(timeBlock <= blockIndex) %>% 
+      mutate(trial=blockIndex) %>% bind_rows()
+  
+}) %>% bind_rows() %>% select(-timeBlock)
+
+process3TimeSeriesTestInputExpanded <- 
+  1:length(timeBlocks) %>% map(.f=function(blockIndex){
+    
+    process3TimeSeriesTestInput %>% filter(timeBlock <= blockIndex) %>% 
+      mutate(trial=blockIndex) %>% bind_rows()
+  
+}) %>% bind_rows() %>% select(-timeBlock)
+
+```
+
+```{r}
+
+process2TimeSeriesTestdldtData <-
+  convertSamplesToDValDt(process2TimeSeriesTestInputExpanded,typeNames,numTimeSeriesTrials)
+process3TimeSeriesTestdldtData <-
+  convertSamplesToDValDt(process3TimeSeriesTestInputExpanded,typeNames,numTimeSeriesTrials)
+
+process2TimeSeriesTestdldtImages <- 
+  createImages(process2TimeSeriesTestdldtData,typeNames,numTimeSeriesTrials,limits,bins)
+process3TimeSeriesTestdldtImages <- 
+  createImages(process3TimeSeriesTestdldtData,typeNames,numTimeSeriesTrials,limits,bins)
+
+```
+
+```{r}
+
+process2TimeSeriesTestImagesInRows <-
+  widenImageDataFrame(process2TimeSeriesDldtTestImages,numPixels) %>%
+  select(-c(trial,type))
+
+process3TimeSeriesTestImagesInRows <-
+  widenImageDataFrame(process3TimeSeriesDldtTestImages,numPixels) %>%
+  select(-c(trial,type))
+
+
+rgbTimeSeriesTestImagesInRows <-
+  bind_cols(timeSeriesTestImagesInRows,
+            process2TimeSeriesTestImagesInRows,
+            process3TimeSeriesTestImagesInRows,)
+
+
+rgbTimeSeriesTestPredictionTable <-
+  testKerasModelForProbType(rgbTimeSeriesTestImagesInRows,rgbKerasModel)
+
+```
+
+```{r}
+
+rgbTimeSeriesTestPredictionTable %>% ggplot(aes(x=trial,y=probability,color=predictedType)) + geom_line() + geom_point() + facet_wrap(~truth)
 
 ```
 

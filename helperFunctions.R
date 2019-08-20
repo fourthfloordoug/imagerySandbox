@@ -1,9 +1,29 @@
-createListOfFunctions <- function(numTypes) {
+createProcess1Funcs <- function(numTypes) {
   
   fullFunctionList = list(function(x){sin(x/35)},
                       function(x){1.5*sin(x/35)},
                       function(x){sin(x/35)+0.01*x},
                       function(x){sqrt(x)/10 + 0.01*x})
+  
+  fullFunctionList[1:numTypes]
+}
+
+createProcess2Funcs <- function(numTypes) {
+  
+  fullFunctionList = list(function(x){x*x/150},
+                          function(x){0.75*x},
+                          function(x){0.5*x + x*x/100},
+                          function(x){exp(x/25)})
+  
+  fullFunctionList[1:numTypes]
+}
+
+createProcess3Funcs <- function(numTypes) {
+  
+  fullFunctionList = list(function(x){3*sqrt(x)},
+                          function(x){sqrt(3*x)},
+                          function(x){2*log10(x+1)},
+                          function(x){2*x^(1/3)})
   
   fullFunctionList[1:numTypes]
 }
