@@ -477,7 +477,7 @@ We proceed in a similar manner to above by sampling times (we'll use the same as
 
 ```{r}
 
-process2Noise = 1.0
+process2Noise = 5.0
 process3Noise = 1.0
 
 process2SampledTable <-
@@ -493,7 +493,9 @@ process3SampledTable <-
 ```{r}
 
 process2GPs <- fitGaussianProcesses(typeNames,process2SampledTable)
+```
 
+```{r}
 process3GPs <- fitGaussianProcesses(typeNames,process3SampledTable)
 
 ```
@@ -501,7 +503,9 @@ process3GPs <- fitGaussianProcesses(typeNames,process3SampledTable)
 ```{r}
 
 process2TrainingDataTable <- generateSamples(process2GPs,typeNames,maxTimesForBins,numProfilesPerTimeBin,numPointsPerFrofileRanges)
+```
 
+```{r}
 process3TrainingDataTable <- generateSamples(process3GPs,typeNames,maxTimesForBins,numProfilesPerTimeBin,numPointsPerFrofileRanges)
 
 ```
