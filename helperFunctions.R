@@ -125,7 +125,7 @@ generateSamples <- function(gpList,
   }) %>% bind_rows()
   
   
-  observations <- map2(.x=listOfGPs,.y=typeNames,.f=function(gp,name) {
+  observations <- map2(.x=gpList,.y=typeNames,.f=function(gp,name) {
     
     samplesForType <- generateGPSamples(gp,observationTimeTable)
     samplesForType %>% mutate(type=rep(name,n()))
