@@ -121,9 +121,12 @@ trainKerasModel <- function(wideImageFrame) {
   #scale everything from 0 to 1.  We'll pretend it is an 16 bit image
   inputDataMatrix <- inputDataMatrix / (maxPixelValue -1)
   
-  categoryTable <- wideImageFrame %>% select(type)
+  categoryTable <- wideImageFrame %>% select(type) 
+  
   #We need to convert the types to integer values for use in keras
-  categoryTable %<>% transmute(type = as.integer(substr(type,6,6)))
+  #categoryTable %<>% transmute(type = as.integer(substr(type,6,6)))
+  #This has been taken care of outside.
+  
   #unfortunately, the class names have to be 0 indexed, so we subtract
   categoryTable %<>% transmute(type = type-1)
   
@@ -170,8 +173,7 @@ testKerasModel <- function(wideImageFrame,kerasModel) {
   inputDataMatrix <- as.matrix(wideImageFrame[,3:(2+numPixels)])
   inputDataMatrix <- inputDataMatrix / (maxPixelValue -1)
   
-  categoryTable <- wideImageFrame %>% select(type) %>% 
-    transmute(type = as.integer(substr(type,6,6)))
+  categoryTable <- wideImageFrame %>% select(type) #%>% transmute(type = as.integer(substr(type,6,6)))
   typeValues <- as.vector(categoryTable$type)
   
   
@@ -202,8 +204,7 @@ testKerasModelForProbType <- function(wideImageFrame,kerasModel) {
   inputDataMatrix <- as.matrix(wideImageFrame[,3:(2+numPixels)])
   inputDataMatrix <- inputDataMatrix / (maxPixelValue -1)
   
-  categoryTable <- wideImageFrame %>% select(type) %>% 
-    transmute(type = as.integer(substr(type,6,6)))
+  categoryTable <- wideImageFrame %>% select(type) #%>% transmute(type = as.integer(substr(type,6,6)))
   typeValues <- as.vector(categoryTable$type)
   
   

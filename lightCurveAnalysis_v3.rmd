@@ -1,0 +1,697 @@
+---
+title: "lightCurveAnalysis_3"
+author: "Doug Ratay"
+date: "September 17, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+source('imageFunctions.R')
+source('helperFunctions.R')
+```
+
+
+# Thinking about Light Curves
+
+This is a second update to the lightCurveAnalysis business.  Always spiraling. The main addition here is that I'm going to abstract away the function generation to just reading from files.  That will allow for easier use in the shiny app that I'm making.  Also, I will be doing all of that generation up at the beginning so that the terms are available for use throughout. Finally, I'll only comment in the construction of gifs, since they take forever to make and do more with just faceted images.
+
+Otherwise, the same procedure applies here, though.  We'll make some truth functions, sample the functions, and represent truth with Gaussian Processes.  Then we'll draw samples from those GPs as the input to DLDT images.  Those will get fed into a DNN to do classification on some test points.  Fun.
+
+## Generate Truth Signals
+
+We have some truth signals that are stored away in files.  We read them in and then combine to make a data table that gets used later.
+
+```{r, warning=FALSE, message=FALSE}
+require(tibble)
+require(dplyr)
+require(magrittr)
+require(ggplot2)
+require(tidyr)
+require(purrr)
+
+directory = './truthFiles/'
+fileNames = c('Pro1Type1.csv','Pro1Type2.csv','Pro1Type3.csv','Pro1Type4.csv',
+              'Pro2Type1.csv','Pro2Type2.csv','Pro2Type3.csv','Pro2Type4.csv',
+              'Pro3Type1.csv','Pro3Type2.csv','Pro3Type3.csv','Pro3Type4.csv')
+
+numProcesses = 3
+numTypes = 4
+
+truthData <- fileNames %>% map_df(.f=function(fileName) {
+  
+  processNumber = substr(fileName,4,4)
+  typeNumber = substr(fileName,9,9)
+  
+  path = paste(directory,fileName,sep="")
+  data = read.csv(path) %>% as.tibble() %>% mutate(processIndex = as.factor(processNumber),funcIndex = as.factor(typeNumber))
+  
+})
+
+timeVals = unique(truthData$time) %>% as.array()
+typeNames = c('1','2','3','4')
+
+```
+
+
+```{r}
+
+1:numProcesses %>% walk(.f=function(index) {
+  
+  plot(truthData %>% filter(processIndex==index) %>% ggplot(aes(x=time,y=value,color=funcIndex)) + geom_line() + ggtitle(paste('Truth Functions for Process',index)) + labs(color="Truth Type") )  
+})
+
+```
+
+As before, we add complexity to the problem by purposefully losing track of the functions and working purely with sampled data.  To do that, we randomly sample the functions, add Gaussian noise, and learn a Gaussian Process over the noisy samples.  The Gaussian Process allows for variable uncertainty depending on how close a requested sample is to a training point and the ability to freely sample at non-prespecified times.  
+
+We plot the sampled points with noise below.
+
+```{r}
+
+truthPointsToKeep = 50
+sampleNoise = c(0.01,5.0,1.0)
+
+sampledTruthData <- map2_df(.x=1:numProcesses,.y=sampleNoise,.f=function(procIndex,noise) {
+  
+  map_df(.x=1:numTypes,.f=function(typeIndex) {
+    
+    keptTimes = sort(sample(timeVals,truthPointsToKeep))
+    
+    sampledData <- truthData %>% filter(processIndex==procIndex,funcIndex==typeIndex,time %in% keptTimes)
+    sampledData %<>% mutate(noiseValue = value + rnorm(n(),0,noise))
+  })
+  
+})
+
+```
+
+```{r}
+
+1:numProcesses %>% walk(.f=function(index) {
+  
+  plot(sampledTruthData %>% filter(processIndex==index) %>% ggplot(aes(x=time,y=value,color=funcIndex)) + geom_point() + ggtitle(paste('Down Sampled and Noise Data for Process',index)) + labs(color="Truth Type") )  
+})
+
+```
+
+Fit a Gaussian process to the sampled data.  Create maximum likelihood predictions at all of the original time points to show that the GPs are doing what they're supposed to.  The prediction points also includes error bars.  Depending on the points used and the noise added to the samples difference across the range may be visible.  We also produce samples of the GPs that correspond to different time ranges that could be observed.
+
+
+```{r}
+require(GauPro)
+
+gpListofLists <- 1:numProcesses %>% map(.f=function(procIndex){
+  
+  gpList <- 1:numTypes %>% map(.f=function(typeIndex) {
+    
+    sampledTruthData %>% filter(processIndex==procIndex,funcIndex==typeIndex) %>% transmute(time=time,value=noiseValue) %>% learnGP()
+    
+  })
+  
+})
+
+
+gpPredictions <- 1:numProcesses %>% map_df(.f= function(procIndex) {
+  
+  predictionTable <- createGaussianProcessPredictions(gpListofLists[[procIndex]],typeNames,timeVals)
+  predictionTable %>% mutate(processIndex = procIndex)
+})
+
+gpPredictions %<>% mutate(processIndex = as.factor(processIndex),type = as.factor(type))
+
+```
+
+```{r}
+
+1:numProcesses %>% walk(.f=function(index) {
+  
+  plot(gpPredictions %>% filter(processIndex==index) %>% ggplot(aes(x=time,y=mean,color=type)) + geom_line() + geom_linerange(aes(ymin=lower,ymax=upper)))
+  
+})
+
+```
+
+
+
+
+
+```{r}
+
+maxTimesForBins = c(20,40,60,80,100)
+numProfilesPerTimeBin = c(30,30,30,30,30)
+numPointsPerProfileRanges = list(4:10,8:20,12:30,16:40,20:50)
+
+
+trainingCurveSamples <- 1:numProcesses %>% map_df(.f=function(procIndex) {
+  
+  processTraining <- generateSamples(gpListofLists[[procIndex]],
+                                      typeNames,
+                                      maxTimesForBins,
+                                      numProfilesPerTimeBin,
+                                      numPointsPerFrofileRanges) %>% mutate(processIndex = procIndex)
+    
+})
+
+
+```
+
+
+```{r}
+
+trainingTrials = seq(1,150,by=5)
+
+1:numProcesses %>% walk(.f=function(procIndex) {
+
+  plot(trainingCurveSamples %>% filter(processIndex == procIndex) %>% mutate(trial=as.factor(trial))  %>% filter(trial %in% trainingTrials) %>% ggplot(aes(x=time,y=value,color=type)) + geom_point() + facet_wrap(~trial))  
+  
+})
+
+```
+
+
+
+```{r}
+
+totalProfilesPerType = sum(numProfilesPerTimeBin)
+
+trainingDlDtData <- 1:numProcesses %>% map_df(.f=function(procIndex) {
+
+  
+  trainingCurveSamples %>% filter(processIndex == procIndex) %>% convertSamplesToDValDt(typeNames,
+                                                                                        totalProfilesPerType) %>% mutate(processIndex = procIndex)
+
+  
+})
+
+```
+
+
+```{r}
+
+1:numProcesses %>% walk(.f=function(procIndex){
+  
+  1:numTypes %>% walk(.f=function(typeIndex) {
+    
+
+    plot(trainingDlDtData %>% filter(processIndex == procIndex,trial %in% trainingTrials,type==typeNames[typeIndex]) %>% ggplot(aes(x=time,y=value)) + geom_point() + facet_wrap(~trial))
+
+  })
+  
+})
+
+```
+
+And now we create images.  There are a couple of parameters that have to get set for the binning process that are defined by the algorithm.  First is "limits"", a 2x2 matrix that has the x-range in teh first row and the y-range in the second.  Then "bins", a 2 element array that contains the number of x-bins and the number of y-bins.  We use a 16x16 image since this seems to fit the shape of the data well and is reasonably small for later processing by our DBN.
+
+```{r}
+require(ash)
+require(imager)
+
+imageLimits <- list(matrix(c(0,-2,100,2),2,2),matrix(c(0,0,100,150),2,2),matrix(c(0,0,100,30),2,2))
+
+xPixels = 16
+yPixels = 16
+bins <- c(xPixels,yPixels)
+numPixels = xPixels * yPixels
+
+dldtTrainingImages <- map2_df(.x=1:numProcesses,.y=imageLimits,.f=function(procIndex,limits) {
+  
+  trainingDlDtData %>% filter(processIndex == procIndex) %>% createImages(typeNames,totalProfilesPerType,limits,bins) %>% mutate(processIndex = procIndex)
+})
+
+```
+
+
+```{r}
+
+1:numProcesses %>% walk(.f=function(procIndex) {
+  
+  1:numTypes %>% walk(.f=function(typeIndex) {
+    
+    plot(dldtTrainingImages %>% filter(processIndex == procIndex,trial %in% trainingTrials,type==typeNames[typeIndex]) %>%  ggplot(aes(x,y)) + geom_raster(aes(fill=value)) + facet_wrap(~trial))    
+    
+  })
+})
+
+```
+
+
+## Analyze Images
+
+The nice thing about converting to the images is that we now have a regular size across all samples to either do visualization or comparisons.  Here we'll take a slight detour and put all the points into tsne and see what happens.
+
+Note that tsne requires all the points to be unique, so we have to test for and remove duplicates.  We'll tolerate this since this is just for display, although it tells us that maybe we should sample across different times in the future.
+
+```{r}
+
+require(Rtsne)
+
+trainingImagesInRowsList <- 1:numProcesses %>% map(.f=function(procIndex) {
+  
+  dldtTrainingImages %>% filter(processIndex == procIndex) %>% select(-processIndex) %>% widenImageDataFrame(numPixels)
+})
+
+tsneTrainingImagesOutput <- trainingImagesInRowsList %>% map(.f=function(singleProcessTrainingData) {
+  
+  getTSNEEmbedding(singleProcessTrainingData,numPixels)
+})
+
+```
+
+
+```{r}
+require(ggforce)
+
+tsneTrainingImagesOutput %>% walk(.f=function(tsneForProcess) {
+  
+  plot(tsneForProcess %>% ggplot(aes(x=V1,y=V2,color=type)) + geom_point())
+})
+```
+
+
+```{r}
+
+#try a second one with some ellipses
+tsneTrainingImagesOutput %>% walk(.f=function(tsneForProcess) {
+  
+  plot(tsneForProcess %>% ggplot(aes(x=V1,y=V2,color=type)) + geom_mark_ellipse(aes(fill=type)) + geom_point())
+})
+```
+
+```{r}
+
+#this makes an acyclical graph plot of the points.
+tsneTrainingImagesOutput %>% walk(.f=function(tsneForProcess) {
+  
+  plot(tsneForProcess %>% ggplot(aes(x=V1,y=V2)) + geom_delaunay_tile(alpha = 0.3) + geom_delaunay_segment2(aes(colour = type, group = -1), size = 1,lineend = 'round'))
+  
+})
+```
+
+
+## Learn Classifier
+
+Having made some pictures, we begin to learn a model.  We've already widened the data into a matrix that is appropriate for using in an NN.  We attempt that here.  The charts below show how we self-test on the training data.  Charts 1 and 3 are based on truth data.  There are 150 trials for each type, how many of those did we get right.  Chart 1 is overall and Chart 3 is based on time.  Charts 2 and 4 are based on predictions.  How many predictions of a given type were correct.  By combining the two, we can see how we misclassified things.  I will look into making an alluvial plot for this as well.
+
+```{r}
+
+#A function accomplishes all of the work of training the model, and knows something about the structure we want to use, so we send in our data
+require(keras)
+require(tensorflow)
+#install_keras()
+
+kerasModelsList <- trainingImagesInRowsList %>% map(.f=function(trainingDataForProcess) {
+  
+  trainingDataForProcess %>% mutate(type = as.integer(type)) %>% trainKerasModel()
+})
+```
+
+
+```{r}
+#We'll test our training data here.
+listOfSelfPredictions <- map2(.x=trainingImagesInRowsList,.y=kerasModelsList,.f=function(data,models) {
+  
+  data %<>% mutate(type = as.integer(type))
+  testKerasModel(data,models)
+})
+  
+```
+
+```{r}
+
+listOfSelfPredictions %>% walk(.f=function(selfPrediction) {
+  
+  plot(selfPrediction %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct)))
+})
+
+```
+
+```{r}
+
+listOfSelfPredictions %>% walk(.f=function(selfPrediction) {
+  
+  plot(selfPrediction %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct)))  
+})
+
+
+```
+
+
+```{r}
+
+selfTestAlluvialList <- listOfSelfPredictions %>% map(.f=function(selfTestPrediction) {
+  
+  trialBins <- c(31,61,91,121,151)
+  selfTestPrediction %<>% mutate(trialBin = case_when(trial<trialBins[1] ~ 1,
+                                                         trial<trialBins[2] ~ 2,
+                                                         trial<trialBins[3] ~ 3,
+                                                         trial<trialBins[4] ~ 4,
+                                                         trial<trialBins[5] ~ 5))
+  
+  
+  selfTestPrediction %>%
+  mutate(truth=as.factor(truth),
+         predict=as.factor(predict),
+         trialBin=as.factor(trialBin)) %>%
+  group_by(truth, predict,trialBin) %>%
+  summarise(n()) %>% rename(value = 'n()') %>%
+  mutate(correct=ifelse(truth==predict,'good','bad')) %>% 
+  gather_set_data(c(1:3))
+})
+  
+selfTestAlluvialList %>% walk(.f=function(selfTestAlluvial) {
+
+  plot(selfTestAlluvial %>% ggplot(aes(x, id = id, split = y, value = value)) + geom_parallel_sets(aes(fill = correct), alpha = 0.3, axis.width = 0.1) + geom_parallel_sets_axes(axis.width = 0.1) + geom_parallel_sets_labels(colour = 'white'))  
+})  
+
+```
+
+## Test Classifier
+
+To test our model, we create new samples that weren't in the original set.  We will make a fair amount less points than the original, since we don't need to train a model.
+
+
+```{r}
+
+numProfilesPerTimeBin_test = c(5,5,5,5,5)
+
+
+testCurveSamples <- 1:numProcesses %>% map_df(.f=function(procIndex) {
+  
+  processTraining <- generateSamples(gpListofLists[[procIndex]],
+                                      typeNames,
+                                      maxTimesForBins,
+                                      numProfilesPerTimeBin_test,
+                                      numPointsPerFrofileRanges) %>% mutate(processIndex = procIndex)
+    
+})
+
+```
+
+```{r}
+
+#A little side number we need to store for later is the length and index of the longest trial in our training set.
+
+maxLengthTestTrial <- testCurveSamples %>% filter(processIndex == 1,type==typeNames[1]) %>% 
+  group_by(trial) %>% summarise(n()) %>% top_n(n = 1)
+
+```
+
+
+```{r}
+
+1:numProcesses %>% walk(.f=function(procIndex) {
+
+  plot(testCurveSamples %>% filter(processIndex == procIndex) %>% mutate(trial=as.factor(trial))  %>% ggplot(aes(x=time,y=value,color=type)) + geom_point() + facet_wrap(~trial))  
+  
+})
+
+```
+
+
+Create DLDT's and Images.  We just visualize the imgaes.
+
+```{r}
+
+totalTestProfilesPerType = sum(numProfilesPerTimeBin_test)
+
+testDlDtData <- 1:numProcesses %>% map_df(.f=function(procIndex) {
+
+  
+  testCurveSamples %>% filter(processIndex == procIndex) %>% convertSamplesToDValDt(typeNames,totalTestProfilesPerType) %>% mutate(processIndex = procIndex)
+
+})
+
+```
+
+```{r}
+
+dldtTestImages <- map2_df(.x=1:numProcesses,.y=imageLimits,.f=function(procIndex,limits) {
+  
+  testDlDtData %>% filter(processIndex == procIndex) %>% createImages(typeNames,totalTestProfilesPerType,limits,bins) %>% mutate(processIndex = procIndex)
+})
+
+```
+
+
+```{r}
+
+1:numProcesses %>% walk(.f=function(procIndex) {
+  
+  1:numTypes %>% walk(.f=function(typeIndex) {
+    
+    plot(dldtTestImages %>% filter(processIndex == procIndex,type==typeNames[typeIndex]) %>%  ggplot(aes(x,y)) + geom_raster(aes(fill=value)) + facet_wrap(~trial))    
+    
+  })
+})
+
+```
+
+
+
+```{r}
+
+
+testImagesInRowsList <- 1:numProcesses %>% map(.f=function(procIndex) {
+  
+  dldtTestImages %>% filter(processIndex == procIndex) %>% select(-processIndex) %>% widenImageDataFrame(numPixels)
+})
+
+```
+
+
+Test data against models
+
+```{r}
+#We'll test our test data here.
+listOfOOSPredictions <- map2(.x=testImagesInRowsList,.y=kerasModelsList,.f=function(data,models) {
+  
+  data %<>% mutate(type = as.integer(type))
+  testKerasModel(data,models)
+})
+  
+```
+
+```{r}
+
+listOfOOSPredictions %>% walk(.f=function(oosPrediction) {
+  
+  plot(oosPrediction %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct)))
+})
+
+```
+
+
+```{r}
+
+listOfOOSPredictions %>% walk(.f=function(oosPrediction) {
+  
+  plot(oosPrediction %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct)))  
+})
+
+```
+
+
+## Time Series Prediction
+
+One thing we're interested in a practical sense is to follow a time series along and see how our estimation of the object changes over time.  To do this, we take the longest test sample for each type, and then divide it up into increasingly long parts. We calculate the type at each time stop to see when/how it gets to the right answer.
+
+
+```{r}
+
+#select test trial 25 from each of our classes.  We have to go back to the original test data and then build up the dldts and images.  
+
+#label the data with a time block index.
+timeBlocks <- seq(from=0,to=100,by=10)
+
+longestTestTrial = maxLengthTestTrial$trial
+
+expandedTimeSeriesTestInputList <- 1:numProcesses %>% map(.f=function(procIndex){
+
+  
+  timeSeriesTestInput <- testCurveSamples %>% filter(processIndex==procIndex,trial == longestTestTrial) %>% select(-trial) %>% mutate(timeBlock = cut(time,breaks = timeBlocks,labels=FALSE))
+
+   
+  1:length(timeBlocks) %>% map_df(.f=function(blockIndex){
+    
+    timeSeriesTestInput %>% filter(timeBlock <= blockIndex) %>% mutate(trial=blockIndex) %>% bind_rows() %>% select(-c(timeBlock,processIndex))
+    
+  }) 
+    
+})
+
+```
+
+
+
+```{r}
+
+numTimeSeriesTrials = length(timeBlocks) - 1;
+
+timeSeriesTestDlDtImagesList <-
+  map2(.x=expandedTimeSeriesTestInputList,.y=imageLimits,.f=function(timeSeriesInput,limits) {
+
+  dldtData <- convertSamplesToDValDt(timeSeriesInput,typeNames,numTimeSeriesTrials)
+
+  createImages(dldtData,typeNames,numTimeSeriesTrials,limits,bins)  
+  
+})
+
+```
+
+
+```{r}
+
+timeSeriesTestDlDtImagesList %>% walk(.f=function(imagesForProcess) {
+  
+  1:numTypes %>% walk(.f=function(typeIndex) {
+    
+    plot(imagesForProcess %>% filter(type==typeNames[typeIndex]) %>%  ggplot(aes(x,y)) + geom_raster(aes(fill=value)) + facet_wrap(~trial))    
+    
+  })
+})
+
+```
+
+
+
+
+```{r}
+
+wideTimeSeriesList <- timeSeriesTestDlDtImagesList %>% map(.f=function(dldtImages) {
+  
+  widenImageDataFrame(dldtImages,numPixels) %>% mutate(type = as.integer(type))
+})
+
+timeSeriesTestPredictionTable <- map2(.x=wideTimeSeriesList,.y=kerasModelsList,.f=function(wideImages,model) {
+  
+  testKerasModelForProbType(wideImages,model)
+})
+
+
+```
+
+
+
+```{r}
+timeSeriesTestPredictionTable %>% walk(.f=function(predictionTable){
+
+  plot(predictionTable %>% ggplot(aes(x=trial,y=probability,color=predictedType)) + geom_line() + geom_point() + facet_wrap(~truth))  
+  
+})
+
+```
+
+
+We can combine these images into RGB frames.  
+
+```{r}
+
+dldtTrainingImagesList = list((dldtTrainingImages %>% filter(processIndex == 1)),(dldtTrainingImages %>% filter(processIndex == 2)), (dldtTrainingImages %>% filter(processIndex ==3 ))) 
+
+rgbTrainingDataForPlot = dldtTrainingImagesList[[1]] %>% mutate(value2 = dldtTrainingImagesList[[2]]$value, value3 = dldtTrainingImagesList[[3]]$value) %>% mutate(value = value/256,value2 = value2/256,value3=value3/256) %>% mutate(rgb.val=rgb(value,value2,value3))
+
+```
+
+
+```{r}
+
+1:numTypes %>% walk(.f=function(typeIndex) {
+
+  plot(rgbTrainingDataForPlot %>% filter(type==typeNames[typeIndex],trial %in% trainingTrials) %>% ggplot(aes(x,y))+geom_raster(aes(fill=rgb.val))+scale_fill_identity() + facet_wrap(~trial))  
+  
+})
+
+```
+
+Now we wideng the datatables and send to training.
+
+```{r}
+
+rgbTrainingImagesInRows <- bind_cols(trainingImagesInRowsList[[1]],
+                                      (trainingImagesInRowsList[[2]] %>% select(-c(trial,type))),
+                                      (trainingImagesInRowsList[[3]] %>% select(-c(trial,type)))) 
+rgbTrainingImagesInRows %<>% mutate(type = as.integer(type))
+
+```
+
+
+```{r}
+
+rgbKerasModel <- trainKerasModel(rgbTrainingImagesInRows)
+
+```
+
+```{r}
+#We'll test our training data here.
+rgbSelfTestPredictionTable <- testKerasModel(rgbTrainingImagesInRows,rgbKerasModel)
+
+```
+
+```{r}
+rgbSelfTestPredictionTable %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct))
+
+```
+
+
+```{r}
+rgbSelfTestPredictionTable %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct))
+
+```
+
+
+Now do the test points
+
+
+```{r}
+
+rgbTestImagesInRows <- bind_cols(testImagesInRowsList[[1]],
+                                      (testImagesInRowsList[[2]] %>% select(-c(trial,type))),
+                                      (testImagesInRowsList[[3]] %>% select(-c(trial,type)))) 
+rgbTestImagesInRows %<>% mutate(type = as.integer(type))
+
+```
+
+
+```{r}
+#We'll test our training data here.
+rgbOOSTestPredictionTable <- testKerasModel(rgbTestImagesInRows,rgbKerasModel)
+
+```
+
+```{r}
+rgbOOSTestPredictionTable %>% ggplot(aes(truth)) + geom_bar(aes(fill=correct))
+
+```
+
+
+```{r}
+rgbOOSTestPredictionTable %>% ggplot(aes(predict)) + geom_bar(aes(fill=correct))
+
+```
+
+
+
+Now do the RGB time series.
+
+```{r}
+
+rgbTimeSeriesTestImagesInRows <- bind_cols(wideTimeSeriesList[[1]],
+                                           (wideTimeSeriesList[[2]] %>% select(-c(trial,type))),
+                                           (wideTimeSeriesList[[3]] %>% select(-c(trial,type))))
+
+rgbTimeSeriesTestImagesInRows %<>% mutate(type = as.integer(type))
+
+rgbTimeSeriesTestPredictionTable <-
+  testKerasModelForProbType(rgbTimeSeriesTestImagesInRows,rgbKerasModel)
+
+```
+
+
+```{r}
+
+rgbTimeSeriesTestPredictionTable %>% ggplot(aes(x=trial,y=probability,color=predictedType)) + geom_line() + geom_point() + facet_wrap(~truth)
+
+```

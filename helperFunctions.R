@@ -89,7 +89,7 @@ createGaussianProcessPredictions <- function(listOfGPs,typeNames,timeVals) {
   predictions <- map2(.x=listOfGPs,.y=typeNames,.f=function(gp,name) {
     
     prediction <- gp$predict(timeVals,se=TRUE)
-    prediction %<>% mutate(time=timeVals,upper=mean+2*se,lower=mean-2*se,type=rep(name,numTimes))
+    prediction %<>% mutate(time=timeVals,upper=mean+2*se,lower=mean-2*se,type=rep(name,length(timeVals)))
   }) %>% bind_rows()
   
   predictions
